@@ -1,0 +1,7 @@
+streamlit
+pdfplumber
+pandas
+pydantic
+tenacity
+google-genai
+fpdf2
