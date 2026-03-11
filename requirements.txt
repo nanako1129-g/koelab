@@ -5,3 +5,4 @@ pydantic
 tenacity
 google-genai
 fpdf2
+python-dotenv

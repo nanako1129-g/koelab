@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Optional
 from src.analyze import classify_records
 from src.propose import generate_proposal
 
@@ -43,6 +43,7 @@ def _rule_classify(record: Dict) -> Dict:
         "confidence": 0.35
     }
 
+
 def classify_records_safe(records: List[Dict]) -> List[Dict]:
     try:
         return classify_records(records)
@@ -50,43 +51,49 @@ def classify_records_safe(records: List[Dict]) -> List[Dict]:
         print(f"Gemini classification failed, using rule-based: {e}")
         return [_rule_classify(r) for r in records]
 
-TEMPLATE_A = {
-    "title": "暮らし課題解決パッケージ",
-    "target_themes": ["交通", "医療"],
-    "problem": "市民アンケートで交通・医療へのアクセス困難が多数報告",
-    "solution": "デマンド交通の拡充とオンライン診療の導入支援",
-    "scope": "気仙沼市全域（特に中山間部）",
-    "budget_range_yen": "3,000万〜6,000万",
-    "schedule": [{"phase": "調査・設計", "period": "6ヶ月"},
-                 {"phase": "実証実験", "period": "1年"},
-                 {"phase": "本格運用", "period": "2年目〜"}],
-    "kpi": [{"metric": "利用者数", "target": "月500人"},
-            {"metric": "満足度", "target": "70%以上"}],
-    "risks": [{"risk": "利用率低迷", "mitigation": "広報強化・無料体験期間"}],
-    "evidence_source_ids": []
-}
 
-TEMPLATE_B = {
-    "title": "市民参加・広聴DX推進事業",
-    "target_themes": ["広聴・参加", "ジェンダー"],
-    "problem": "市政への参加機会が限定的でジェンダーギャップの声が届きにくい",
-    "solution": "オンライン広聴プラットフォーム導入と多様な声の可視化",
-    "scope": "気仙沼市全域",
-    "budget_range_yen": "800万〜2,000万",
-    "schedule": [{"phase": "要件定義", "period": "3ヶ月"},
-                 {"phase": "開発・テスト", "period": "6ヶ月"},
-                 {"phase": "運用開始", "period": "1年目〜"}],
-    "kpi": [{"metric": "投稿数", "target": "月100件"},
-            {"metric": "女性参加率", "target": "50%以上"}],
-    "risks": [{"risk": "デジタル格差", "mitigation": "紙・対面との併用"}],
-    "evidence_source_ids": []
-}
+def _build_fallback_template(bucket: str, evidence: List[Dict],
+                              source_name: Optional[str] = None) -> Dict:
+    area = source_name or "対象地域"
 
-def generate_proposal_safe(bucket: str, evidence: List[Dict]) -> Dict:
+    if bucket == "A":
+        return {
+            "title": "暮らし課題解決パッケージ",
+            "target_themes": ["交通", "医療"],
+            "problem": f"{area}の市民アンケートで交通・医療へのアクセス困難が多数報告",
+            "solution": "デマンド交通の拡充とオンライン診療の導入支援",
+            "scope": f"{area}全域（特に中山間部）",
+            "budget_range_yen": "3,000万〜6,000万",
+            "schedule": [{"phase": "調査・設計", "period": "6ヶ月"},
+                         {"phase": "実証実験", "period": "1年"},
+                         {"phase": "本格運用", "period": "2年目〜"}],
+            "kpi": [{"metric": "利用者数", "target": "月500人"},
+                    {"metric": "満足度", "target": "70%以上"}],
+            "risks": [{"risk": "利用率低迷", "mitigation": "広報強化・無料体験期間"}],
+            "evidence_source_ids": [e["source_id"] for e in evidence[:3]]
+        }
+    else:
+        return {
+            "title": "市民参加・広聴DX推進事業",
+            "target_themes": ["広聴・参加", "ジェンダー"],
+            "problem": f"{area}の市政への参加機会が限定的でジェンダーギャップの声が届きにくい",
+            "solution": "オンライン広聴プラットフォーム導入と多様な声の可視化",
+            "scope": f"{area}全域",
+            "budget_range_yen": "800万〜2,000万",
+            "schedule": [{"phase": "要件定義", "period": "3ヶ月"},
+                         {"phase": "開発・テスト", "period": "6ヶ月"},
+                         {"phase": "運用開始", "period": "1年目〜"}],
+            "kpi": [{"metric": "投稿数", "target": "月100件"},
+                    {"metric": "女性参加率", "target": "50%以上"}],
+            "risks": [{"risk": "デジタル格差", "mitigation": "紙・対面との併用"}],
+            "evidence_source_ids": [e["source_id"] for e in evidence[:3]]
+        }
+
+
+def generate_proposal_safe(bucket: str, evidence: List[Dict],
+                            source_name: Optional[str] = None) -> Dict:
     try:
         return generate_proposal(bucket, evidence)
     except Exception as e:
         print(f"Gemini proposal failed, using template: {e}")
-        template = TEMPLATE_A.copy() if bucket == "A" else TEMPLATE_B.copy()
-        template["evidence_source_ids"] = [e["source_id"] for e in evidence[:3]]
-        return template
+        return _build_fallback_template(bucket, evidence, source_name)

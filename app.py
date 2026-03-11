@@ -1,11 +1,10 @@
 import streamlit as st
+import csv as csv_mod
 import pandas as pd
 import tempfile
 import hashlib
 from pathlib import Path
 from collections import Counter
-from src.ingest_pdf import extract_free_text_records
-from src.demo_select import select_demo_records_balanced
 from src.safe_ops import classify_records_safe, generate_proposal_safe
 from src.evidence_select import pick_evidence
 from src.report_md import build_demo_report_md
@@ -15,11 +14,38 @@ OUTPUTS_DIR = Path("outputs")
 APP_DIR = Path(__file__).resolve().parent
 FONT_PATH = (APP_DIR / "fonts" / "ipaexg.ttf").as_posix()
 
+
 def sha16(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
+
+def records_from_csv(csv_path: str, basename: str):
+    """CSVから直接レコード生成"""
+    rows = list(csv_mod.DictReader(open(csv_path, encoding="utf-8")))
+    return [
+        {
+            "source_id": f"{basename}_{r['id']}",
+            "page": 0,
+            "question_id": "FREE",
+            "text": r["text"],
+        }
+        for r in rows
+    ]
+
+
+def records_from_pdf(pdf_path: str, dataset_id: str):
+    """PDFからテキスト抽出→レコード生成"""
+    from src.ingest_pdf import extract_free_text_records
+    from src.demo_select import select_demo_records_balanced
+
+    records = extract_free_text_records(pdf_path, dataset_id=dataset_id)
+    demo = select_demo_records_balanced(records, n_each=10)
+    return records, demo
+
+
+# --- UI ---
 st.set_page_config(page_title="こえラボ Proto", layout="wide")
-st.title("こえラボ（Koe Lab）プロトタイプ")
+st.title("🗣️ こえラボ（Koe Lab）プロトタイプ")
 st.caption("市民の声をAIで分析し、エビデンス付き新規事業提案レポートを自動生成")
 
 prod_mode = st.sidebar.toggle("本番モード（LLM呼ばない）", value=True)
@@ -27,17 +53,20 @@ st.sidebar.markdown("---")
 st.sidebar.markdown("### 将来構想")
 st.sidebar.markdown("- LINE Bot連携\n- GPSヒートマップ\n- 全国1,741自治体対応")
 
-uploaded = st.file_uploader("PDFをアップロード", type=["pdf"])
+source_name = st.text_input("自治体名（任意）", placeholder="例: 塩尻市、気仙沼市")
+
+uploaded = st.file_uploader("PDF または CSV をアップロード", type=["pdf", "csv"])
 if not uploaded:
-    st.info("気仙沼市Well-beingアンケートPDFをアップロードしてください")
+    st.info("アンケートの PDF または CSV をアップロードしてください")
     st.stop()
 
-pdf_bytes = uploaded.getvalue()
-key = sha16(pdf_bytes)
-dataset_id = f"kesennuma_{key}"
+file_bytes = uploaded.getvalue()
+key = sha16(file_bytes)
+file_ext = Path(uploaded.name).suffix.lower()
 out_dir = OUTPUTS_DIR / key
 out_dir.mkdir(parents=True, exist_ok=True)
 
+# --- 事前生成レポート表示 ---
 demo_pdf_path = out_dir / "demo_report.pdf"
 full_pdf_path = out_dir / "full_report.pdf"
 
@@ -66,26 +95,34 @@ if prod_mode:
     st.info("本番モードON：ライブ生成は無効です")
     st.stop()
 
-st.subheader("2. ライブ生成（デモ20件）")
-run = st.button("ライブ生成を実行", type="primary")
+# --- ライブ生成 ---
+st.subheader("2. ライブ生成")
+run = st.button("📊 ライブ生成を実行", type="primary")
 if not run:
     st.stop()
 
-with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as f:
-    f.write(pdf_bytes)
-    tmp_path = f.name
+# 一時ファイル保存
+tmp_path = out_dir / f"upload{file_ext}"
+tmp_path.write_bytes(file_bytes)
 
 try:
     with st.status("分析中...", expanded=True) as status:
-        st.write("PDF読み込み中...")
-        records = extract_free_text_records(tmp_path, dataset_id=dataset_id)
-        st.write(f"抽出完了: {len(records)}件")
 
-        demo = select_demo_records_balanced(records, n_each=10)
-        n21 = sum(1 for r in demo if r["question_id"] == "Q21")
-        n28 = sum(1 for r in demo if r["question_id"] == "Q28")
-        st.write(f"デモ対象: {len(demo)}件（Q21={n21} / Q28={n28}）")
+        # --- ファイル種別で分岐 ---
+        if file_ext == ".csv":
+            st.write("CSV読み込み中...")
+            basename = Path(uploaded.name).stem
+            demo = records_from_csv(str(tmp_path), basename)
+            st.write(f"読み込み完了: {len(demo)}件")
+        else:
+            st.write("PDF読み込み中...")
+            dataset_id = f"upload_{key}"
+            all_records, demo = records_from_pdf(str(tmp_path), dataset_id)
+            n21 = sum(1 for r in demo if r["question_id"] == "Q21")
+            n28 = sum(1 for r in demo if r["question_id"] == "Q28")
+            st.write(f"抽出完了: {len(all_records)}件 → デモ対象: {len(demo)}件（Q21={n21} / Q28={n28}）")
 
+        # --- ここから共通処理 ---
         st.write("AI分類中...")
         classified = classify_records_safe(demo)
         df = pd.DataFrame(classified)
@@ -104,20 +141,22 @@ try:
         evi_b = pick_evidence(demo, classified, bucket="B", k=5)
 
         st.write("提案生成中...")
-        proposal_a = generate_proposal_safe("A", evi_a)
-        proposal_b = generate_proposal_safe("B", evi_b)
+        sn = source_name if source_name else None
+        proposal_a = generate_proposal_safe("A", evi_a, source_name=sn)
+        proposal_b = generate_proposal_safe("B", evi_b, source_name=sn)
 
         st.write("レポート作成中...")
-        md = build_demo_report_md(demo, classified, proposal_a, proposal_b)
+        md = build_demo_report_md(demo, classified, proposal_a, proposal_b,
+                                  source_name=sn)
         (out_dir / "demo_report.md").write_text(md, encoding="utf-8")
 
         pdf_out = out_dir / "demo_report.pdf"
         try:
             md_to_simple_pdf(md, str(pdf_out), font_path=FONT_PATH)
             status.update(label="完了！", state="complete")
-            st.download_button("生成したPDFをダウンロード",
+            st.download_button("📥 生成したPDFをダウンロード",
                                data=pdf_out.read_bytes(),
-                               file_name="koelab_demo_live.pdf",
+                               file_name="koelab_report.pdf",
                                mime="application/pdf")
         except Exception as e:
             txt_path = out_dir / "demo_report.txt"
@@ -125,7 +164,7 @@ try:
             status.update(label="PDF失敗→テキスト版", state="complete")
             st.download_button("テキスト版をダウンロード",
                                data=md,
-                               file_name="koelab_demo.txt",
+                               file_name="koelab_report.txt",
                                mime="text/plain")
 except Exception as e:
     st.error(f"エラー: {e}")
@@ -133,7 +172,5 @@ except Exception as e:
         st.info("事前生成PDFを代わりに提示します")
         st.download_button("事前生成PDFをダウンロード",
                            data=demo_pdf_path.read_bytes(),
-                           file_name="koelab_demo_fallback.pdf",
+                           file_name="koelab_fallback.pdf",
                            mime="application/pdf")
-finally:
-    Path(tmp_path).unlink(missing_ok=True)
