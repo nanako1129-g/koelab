@@ -1,7 +1,9 @@
 import re
 from typing import List, Dict, Optional
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+JST = timezone(timedelta(hours=9))
 
 
 def _guess_source_name(records: List[Dict]) -> Optional[str]:
@@ -20,7 +22,7 @@ def _guess_source_name(records: List[Dict]) -> Optional[str]:
 def build_demo_report_md(records: List[Dict], classified: List[Dict],
                          proposal_a: Dict, proposal_b: Dict,
                          source_name: Optional[str] = None) -> str:
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
 
     # --- 自治体名の推定 ---
     if source_name is None:
