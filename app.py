@@ -68,6 +68,7 @@ out_dir.mkdir(parents=True, exist_ok=True)
 
 # --- 事前生成レポート表示 ---
 demo_pdf_path = out_dir / "demo_report.pdf"
+demo_md_path = out_dir / "demo_report.md"
 full_pdf_path = out_dir / "full_report.pdf"
 
 st.subheader("1. 事前生成レポート")
@@ -75,7 +76,7 @@ col1, col2 = st.columns(2)
 with col1:
     if demo_pdf_path.exists():
         st.success("デモ20件版PDF 検出済み")
-        st.download_button("デモ20件版をダウンロード",
+        st.download_button("デモ20件版PDFをダウンロード",
                            data=demo_pdf_path.read_bytes(),
                            file_name="koelab_demo_20.pdf",
                            mime="application/pdf")
@@ -154,18 +155,29 @@ try:
         try:
             md_to_simple_pdf(md, str(pdf_out), font_path=FONT_PATH)
             status.update(label="完了！", state="complete")
-            st.download_button("📥 生成したPDFをダウンロード",
-                               data=pdf_out.read_bytes(),
-                               file_name="koelab_report.pdf",
-                               mime="application/pdf")
+
+            # --- PDF と テキスト 両方ダウンロード ---
+            dl_col1, dl_col2 = st.columns(2)
+            with dl_col1:
+                st.download_button(
+                    "📥 レポートPDFをダウンロード",
+                    data=pdf_out.read_bytes(),
+                    file_name="koelab_report.pdf",
+                    mime="application/pdf",
+                )
+            with dl_col2:
+                st.download_button(
+                    "📝 レポートテキストをダウンロード",
+                    data=md.encode("utf-8"),
+                    file_name="koelab_report.md",
+                    mime="text/markdown",
+                )
         except Exception as e:
-            txt_path = out_dir / "demo_report.txt"
-            txt_path.write_text(md, encoding="utf-8")
             status.update(label="PDF失敗→テキスト版", state="complete")
             st.download_button("テキスト版をダウンロード",
-                               data=md,
-                               file_name="koelab_report.txt",
-                               mime="text/plain")
+                               data=md.encode("utf-8"),
+                               file_name="koelab_report.md",
+                               mime="text/markdown")
 except Exception as e:
     st.error(f"エラー: {e}")
     if demo_pdf_path.exists():
