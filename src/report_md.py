@@ -112,8 +112,18 @@ def _proposal_section(bucket: str, proposal: Dict,
     num = "5" if bucket == "A" else "6"
     md = f"\n## {num}. 提案{bucket}: {proposal.get('title', '')}\n\n"
     md += f"- 対象テーマ: {', '.join(proposal.get('target_themes', []))}\n"
-    md += f"- 課題: {proposal.get('problem', '')}\n"
-    md += f"- 施策: {proposal.get('solution', '')}\n"
+    problem = proposal.get('problem', '').strip()
+    for prefix in ['課題:', '課題：', '課題 :']:
+        if problem.startswith(prefix):
+            problem = problem[len(prefix):].strip()
+
+    solution = proposal.get('solution', '').strip()
+    for prefix in ['施策:', '施策：', '施策 :']:
+        if solution.startswith(prefix):
+            solution = solution[len(prefix):].strip()
+
+    md += f"- 課題: {problem}\n"
+    md += f"- 施策: {solution}\n"
     md += f"- 対象範囲: {proposal.get('scope', '')}\n"
     md += f"- 概算予算: {proposal.get('budget_range_yen', '')}\n"
 
