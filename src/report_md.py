@@ -24,11 +24,19 @@ def build_demo_report_md(records: List[Dict], classified: List[Dict],
                          source_name: Optional[str] = None) -> str:
     now = datetime.now(JST).strftime("%Y-%m-%d %H:%M")
 
-    # --- 自治体名の推定 ---
-    if source_name is None:
+    # --- 自治体名の推定（明示指定 > ファイル名推定 > レコード本文推定 > フォールバック） ---
+    if not source_name:
+        # ファイル名から推定（source_id が "shiojiri_demo_1" のような形式）
+        first_sid = records[0].get("source_id", "") if records else ""
+        basename = first_sid.rsplit("_", 1)[0] if "_" in first_sid else ""
+        city_pat = re.compile(r'([\u4e00-\u9fff]{1,4}[市町村区])')
+        m = city_pat.search(basename)
+        if m:
+            source_name = m.group(1)
+    if not source_name:
         source_name = _guess_source_name(records)
-    if source_name is None:
-        source_name = records[0].get("source", "アップロードデータ") if records else "不明"
+    if not source_name:
+        source_name = "アップロードデータ"
 
     # --- Q21/Q28 カウント（CSVの場合はFREEなので分けない） ---
     n_q21 = sum(1 for r in records if r.get("question_id") == "Q21")
