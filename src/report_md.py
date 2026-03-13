@@ -26,7 +26,6 @@ def build_demo_report_md(records: List[Dict], classified: List[Dict],
 
     # --- 自治体名の推定（明示指定 > ファイル名推定 > レコード本文推定 > フォールバック） ---
     if not source_name:
-        # ファイル名から推定（source_id が "shiojiri_demo_1" のような形式）
         first_sid = records[0].get("source_id", "") if records else ""
         basename = first_sid.rsplit("_", 1)[0] if "_" in first_sid else ""
         city_pat = re.compile(r'([\u4e00-\u9fff]{1,4}[市町村区])')
@@ -112,6 +111,7 @@ def _proposal_section(bucket: str, proposal: Dict,
     num = "5" if bucket == "A" else "6"
     md = f"\n## {num}. 提案{bucket}: {proposal.get('title', '')}\n\n"
     md += f"- 対象テーマ: {', '.join(proposal.get('target_themes', []))}\n"
+
     problem = proposal.get('problem', '').strip()
     for prefix in ['課題:', '課題：', '課題 :']:
         if problem.startswith(prefix):
@@ -122,8 +122,10 @@ def _proposal_section(bucket: str, proposal: Dict,
         if solution.startswith(prefix):
             solution = solution[len(prefix):].strip()
 
-    md += f"- 課題: {problem}\n"
-    md += f"- 施策: {solution}\n"
+    if problem:
+        md += f"- 課題: {problem}\n"
+    if solution:
+        md += f"- 施策: {solution}\n"
     md += f"- 対象範囲: {proposal.get('scope', '')}\n"
     md += f"- 概算予算: {proposal.get('budget_range_yen', '')}\n"
 
