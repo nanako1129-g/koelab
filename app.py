@@ -1,7 +1,5 @@
 import streamlit as st
-import csv as csv_mod
 import pandas as pd
-import tempfile
 import hashlib
 from pathlib import Path
 from collections import Counter
@@ -9,6 +7,19 @@ from src.safe_ops import classify_records_safe, generate_proposal_safe
 from src.evidence_select import pick_evidence
 from src.report_md import build_demo_report_md
 from src.export_pdf import md_to_simple_pdf
+from src.demo_guard import (
+    CACHE_TTL_HOURS,
+    CSV_MAX_CELL_CHARS,
+    CSV_MAX_FILE_BYTES,
+    CSV_MAX_ROWS,
+    DAILY_USAGE_LIMIT,
+    get_demo_user_key,
+    get_remaining_daily_uses,
+    load_cached_result,
+    register_daily_use,
+    save_cached_result,
+    validate_csv_upload,
+)
 
 OUTPUTS_DIR = Path("outputs")
 APP_DIR = Path(__file__).resolve().parent
@@ -19,8 +30,7 @@ def sha16(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
-def records_from_csv(csv_path: str, basename: str):
-    rows = list(csv_mod.DictReader(open(csv_path, encoding="utf-8")))
+def records_from_csv_rows(rows, basename: str):
     return [
         {
             "source_id": f"{basename}_{r['id']}",
@@ -40,6 +50,32 @@ def records_from_pdf(pdf_path: str, dataset_id: str):
     return records, demo
 
 
+def render_analysis_preview(classified):
+    if not classified:
+        st.warning("表示できる分析結果がありません。")
+        return
+
+    df = pd.DataFrame(classified)
+    preview_cols = ["source_id", "labels", "themes", "summary", "confidence"]
+    display_cols = [c for c in preview_cols if c in df.columns]
+    if display_cols:
+        st.dataframe(df[display_cols], height=200)
+
+    st.write("テーマ分布")
+    theme_counts = Counter()
+    for c in classified:
+        for t in c.get("themes", []):
+            theme_counts[t] += 1
+    if theme_counts:
+        st.bar_chart(pd.Series(dict(theme_counts.most_common())))
+
+
+def set_result_state(pdf_bytes: bytes, md: str):
+    st.session_state["result_pdf"] = pdf_bytes
+    st.session_state["result_md"] = md
+    st.session_state["result_ready"] = True
+
+
 # --- UI ---
 st.set_page_config(page_title="こえラボ Proto", layout="wide")
 st.title("🗣️ こえラボ（Koe Lab）プロトタイプ")
@@ -51,6 +87,10 @@ st.sidebar.markdown("### 将来構想")
 st.sidebar.markdown("- LINE Bot連携\n- GPSヒートマップ\n- 全国1,741自治体対応")
 
 source_name = st.text_input("自治体名（任意）", placeholder="例: 塩尻市、気仙沼市")
+normalized_source_name = source_name.strip() or None
+user_key = get_demo_user_key()
+remaining_uses = get_remaining_daily_uses(user_key)
+st.sidebar.caption(f"ライブ生成の残り回数: {remaining_uses}/{DAILY_USAGE_LIMIT}")
 
 uploaded = st.file_uploader("PDF または CSV をアップロード", type=["pdf", "csv"])
 if not uploaded:
@@ -96,64 +136,89 @@ if prod_mode:
 
 # --- ライブ生成 ---
 st.subheader("2. ライブ生成")
+st.caption(
+    f"デモ版のため、1日あたりのライブ生成は {DAILY_USAGE_LIMIT} 回までです。"
+)
+st.caption(
+    f"CSVは {CSV_MAX_ROWS} 行・{CSV_MAX_FILE_BYTES // 1024}KB・1セル {CSV_MAX_CELL_CHARS} 文字まで対応します。"
+)
 run = st.button("📊 ライブ生成を実行", type="primary")
 
 # --- 生成実行 ---
 if run:
-    tmp_path = out_dir / f"upload{file_ext}"
-    tmp_path.write_bytes(file_bytes)
-
     try:
-        with st.status("分析中...", expanded=True) as status:
-            if file_ext == ".csv":
-                st.write("CSV読み込み中...")
-                basename = Path(uploaded.name).stem
-                demo = records_from_csv(str(tmp_path), basename)
-                st.write(f"読み込み完了: {len(demo)}件")
-            else:
-                st.write("PDF読み込み中...")
-                dataset_id = f"upload_{key}"
-                all_records, demo = records_from_pdf(str(tmp_path), dataset_id)
-                n21 = sum(1 for r in demo if r["question_id"] == "Q21")
-                n28 = sum(1 for r in demo if r["question_id"] == "Q28")
-                st.write(f"抽出完了: {len(all_records)}件 → デモ対象: {len(demo)}件（Q21={n21} / Q28={n28}）")
+        csv_rows = None
+        if file_ext == ".csv":
+            csv_rows = validate_csv_upload(file_bytes)
 
-            st.write("AI分類中...")
-            classified = classify_records_safe(demo)
-            df = pd.DataFrame(classified)
-            st.dataframe(df[["source_id", "labels", "themes", "summary", "confidence"]], height=200)
+        cached = load_cached_result(out_dir, normalized_source_name)
+        if cached:
+            st.info(
+                f"前回結果を再利用しています（キャッシュ保持: {CACHE_TTL_HOURS}時間）。"
+            )
+            with st.status("キャッシュ済みの結果を読み込み中...", expanded=True) as status:
+                render_analysis_preview(cached["classified"])
+                set_result_state(cached["pdf_bytes"], cached["md"])
+                status.update(label="完了！", state="complete")
+        elif remaining_uses <= 0:
+            st.error(
+                f"デモ版のため、ライブ生成は1日 {DAILY_USAGE_LIMIT} 回までです。明日またお試しください。"
+            )
+        else:
+            remaining_after_use = register_daily_use(user_key)
+            st.caption(f"この実行後の残りライブ生成回数: {remaining_after_use}")
 
-            st.write("テーマ分布")
-            theme_counts = Counter()
-            for c in classified:
-                for t in c.get("themes", []):
-                    theme_counts[t] += 1
-            if theme_counts:
-                st.bar_chart(pd.Series(dict(theme_counts.most_common())))
+            tmp_path = out_dir / f"upload{file_ext}"
+            tmp_path.write_bytes(file_bytes)
 
-            st.write("エビデンス選定中...")
-            evi_a = pick_evidence(demo, classified, bucket="A", k=5)
-            evi_b = pick_evidence(demo, classified, bucket="B", k=5)
+            with st.status("分析中...", expanded=True) as status:
+                if file_ext == ".csv":
+                    st.write("CSV読み込み中...")
+                    basename = Path(uploaded.name).stem
+                    demo = records_from_csv_rows(csv_rows, basename)
+                    st.write(f"読み込み完了: {len(demo)}件")
+                else:
+                    st.write("PDF読み込み中...")
+                    dataset_id = f"upload_{key}"
+                    all_records, demo = records_from_pdf(str(tmp_path), dataset_id)
+                    n21 = sum(1 for r in demo if r["question_id"] == "Q21")
+                    n28 = sum(1 for r in demo if r["question_id"] == "Q28")
+                    st.write(f"抽出完了: {len(all_records)}件 → デモ対象: {len(demo)}件（Q21={n21} / Q28={n28}）")
 
-            st.write("提案生成中...")
-            sn = source_name if source_name else None
-            proposal_a = generate_proposal_safe("A", evi_a, source_name=sn)
-            proposal_b = generate_proposal_safe("B", evi_b, source_name=sn)
+                st.write("AI分類中...")
+                classified = classify_records_safe(demo)
+                render_analysis_preview(classified)
 
-            st.write("レポート作成中...")
-            md = build_demo_report_md(demo, classified, proposal_a, proposal_b,
-                                      source_name=sn)
-            (out_dir / "demo_report.md").write_text(md, encoding="utf-8")
+                st.write("エビデンス選定中...")
+                evi_a = pick_evidence(demo, classified, bucket="A", k=5)
+                evi_b = pick_evidence(demo, classified, bucket="B", k=5)
 
-            pdf_out = out_dir / "demo_report.pdf"
-            md_to_simple_pdf(md, str(pdf_out), font_path=FONT_PATH)
+                st.write("提案生成中...")
+                sn = normalized_source_name
+                proposal_a = generate_proposal_safe("A", evi_a, source_name=sn)
+                proposal_b = generate_proposal_safe("B", evi_b, source_name=sn)
 
-            # --- 結果をsession_stateに保存 ---
-            st.session_state["result_pdf"] = pdf_out.read_bytes()
-            st.session_state["result_md"] = md
-            st.session_state["result_ready"] = True
+                st.write("レポート作成中...")
+                md = build_demo_report_md(demo, classified, proposal_a, proposal_b,
+                                          source_name=sn)
+                (out_dir / "demo_report.md").write_text(md, encoding="utf-8")
 
-            status.update(label="完了！", state="complete")
+                pdf_out = out_dir / "demo_report.pdf"
+                md_to_simple_pdf(md, str(pdf_out), font_path=FONT_PATH)
+                pdf_bytes = pdf_out.read_bytes()
+                save_cached_result(
+                    out_dir,
+                    sn,
+                    demo,
+                    classified,
+                    proposal_a,
+                    proposal_b,
+                )
+
+                # --- 結果をsession_stateに保存 ---
+                set_result_state(pdf_bytes, md)
+
+                status.update(label="完了！", state="complete")
 
     except Exception as e:
         st.error(f"エラー: {e}")
